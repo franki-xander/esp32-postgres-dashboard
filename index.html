@@ -55,13 +55,22 @@
     client.onMessageArrived = async (message) => {
         const now = Date.now();
         
-        // Block duplicate POST calls originating from twin background browser events
-        if (now - lastPostTime < DEBOUNCE_DELAY) {
-            console.log("Frontend Debounce: Blocked duplicate telemetry POST request.");
+        // 1. IDENTITY CHECK: If the broker echoed the exact same values within 1 minute, kill it
+        if (data.temp === lastProcessedTemp && data.hum === lastProcessedHum && (now - lastPostTime < 60000)) {
+            console.log("MQTT Broker duplicate echo detected and destroyed.");
             return;
         }
-        lastPostTime = now;
 
+        // 2. TIME CHECK: Standard millisecond fallback
+        if (now - lastPostTime < DEBOUNCE_DELAY) {
+            console.log("Frontend Time Gate: Blocked overlapping network frame.");
+            return;
+        }
+
+        // Cache the values instantly so they can't be reused on the next loop tick
+        lastPostTime = now;
+        lastProcessedTemp = data.temp;
+        lastProcessedHum = data.hum;
         const data = JSON.parse(message.payloadString);
 
         // Forward raw MQTT payload to your Vercel serverless function
