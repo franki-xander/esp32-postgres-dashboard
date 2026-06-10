@@ -139,10 +139,26 @@
         document.body.removeChild(link);
     }
 
-    client.connect({
-        onSuccess: () => { client.subscribe(TOPIC_TELEMETRY); },
-        useSSL: true
-    });
+client.connect({
+    onSuccess: () => {
+        console.log("MQTT: Connected to broker");
+        
+        // --- THIS IS THE CRITICAL PART ---
+        // Subscribe inside onSuccess so it triggers every time we connect/reconnect
+        client.subscribe(TOPIC_TELEMETRY, {
+            onSuccess: () => {
+                console.log("MQTT: Subscription active for topic:", TOPIC_TELEMETRY);
+            },
+            onFailure: (err) => {
+                console.error("MQTT: Subscription failed:", err);
+            }
+        });
+    },
+    onFailure: (err) => {
+        console.error("MQTT: Connection failed:", err);
+    },
+    useSSL: true
+});
 
     // Automatically load database table entries when opening the site
     window.onload = loadDatabaseHistory;
