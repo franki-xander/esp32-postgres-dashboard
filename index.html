@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Postgres Climate Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; background: #fdfdfd; }
+        .box { background: white; border: 1px solid #eaeaea; padding: 24px; border-radius: 12px; margin-bottom: 24px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+        th, td { padding: 12px; border-bottom: 1px solid #f0f0f0; text-align: left; }
+        th { background: #fafafa; font-weight: 600; }
+        button { background: #111; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+        input { padding: 8px; width: 60px; border: 1px solid #ccc; border-radius: 4px; margin-right: 8px; }
+    </style>
+</head>
+<body>
+
+    <div class="box">
+        <h2 style="margin-top:0;">System Controls</h2>
+        <label for="intervalInput">ESP32 Interval (1-5 mins): </label>
+        <input type="number" id="intervalInput" min="1" max="5" value="5">
+        <button onclick="updateInterval()">Send Command</button>
+        <button onclick="downloadCSV()" style="float: right; background: #0070f3;">Download 48h CSV</button>
+    </div>
+
+    <div class="box">
+        <h2>Continuous 48-Hour Log</h2>
+        <table id="dataTable">
+            <thead>
+                <tr>
+                    <th>Timestamp (Local)</th>
+                    <th>Temperature</th>
+                    <th>Humidity</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+<script>
+    const TOPIC_TELEMETRY = "esp32/dht22/telemetry";
+    const TOPIC_INTERVAL  = "esp32/dht22/interval";
+    let globalLogs = [];
+
+    // Connect to MQTT Broker
+    const client = new Paho.MQTT.Client("broker.hivemq.com", Number(8884), "web_pg_" + Math.random().toString(16).substr(2, 8));
+
+    client.onMessageArrived = async (message) => {
+        const data = JSON.parse(message.payloadString);
+
+        // Forward raw MQTT payload to your Vercel serverless function
+        try {
+            await fetch('/api/telemetry', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ temp: data.temp, hum: data.hum })
+            });
+            // Re-render the database table immediately so the update appears live
+            loadDatabaseHistory();
+        } catch (err) {
+            console.error("Error storing data point:", err);
+        }
+    };
+
+    // Pull historical records directly from Neon via Vercel API
+    async function loadDatabaseHistory() {
+        try {
+            const response = await fetch('/api/telemetry');
+            globalLogs = await response.json();
+            
+            const tbody = document.querySelector("#dataTable tbody");
+            tbody.innerHTML = globalLogs.map(log => `
+                <tr>
+                    <td>${new Date(log.timestamp).toLocaleString()}</td>
+                    <td>${log.temperature}°C</td>
+                    <td>${log.humidity}%</td>
+                </tr>
+            `).join('');
+        } catch (err) {
+            console.error("Error loading historical tables:", err);
+        }
+    }
+
+    function updateInterval() {
+        const val = document.getElementById("intervalInput").value;
+        if(val >= 1 && val <= 5) {
+            const msg = new Paho.MQTT.Message(val.toString());
+            msg.destinationName = TOPIC_INTERVAL;
+            client.send(msg);
+            alert(`Interval command broadcasted: ${val}m`);
+        }
+    }
+
+    function downloadCSV() {
+        let csvContent = "data:text/csv;charset=utf-8,Timestamp,Temperature (C),Humidity (%)\n";
+        globalLogs.forEach(log => {
+            csvContent += `"${new Date(log.timestamp).toLocaleString()}",${log.temperature},${log.humidity}\n`;
+        });
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", "weather_archive_48h.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    client.connect({
+        onSuccess: () => { client.subscribe(TOPIC_TELEMETRY); },
+        useSSL: true
+    });
+
+    // Automatically load database table entries when opening the site
+    window.onload = loadDatabaseHistory;
+</script>
+</body>
+</html>
