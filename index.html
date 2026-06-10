@@ -3,30 +3,67 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Postgres Climate Dashboard</title>
+    <title>Dynamic Time-Scaled Climate Dashboard</title>
+    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; background: #fdfdfd; }
-        .box { background: white; border: 1px solid #eaeaea; padding: 24px; border-radius: 12px; margin-bottom: 24px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; background: #fdfdfd; color: #111; }
+        .box { background: white; border: 1px solid #eaeaea; padding: 24px; border-radius: 12px; margin-bottom: 24px; transition: all 0.3s ease; }
         table { width: 100%; border-collapse: collapse; margin-top: 16px; }
         th, td { padding: 12px; border-bottom: 1px solid #f0f0f0; text-align: left; }
         th { background: #fafafa; font-weight: 600; }
-        button { background: #111; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+        
+        /* Interactive Controls Styling */
+        button { background: #111; color: white; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; margin-right: 4px; }
+        button:hover { background: #333; }
+        .btn-toggle { background: #f0f0f0; color: #333; border: 1px solid #e0e0e0; }
+        .btn-toggle.active { background: #0070f3; color: white; border-color: #0070f3; }
+        .btn-toggle.active.temp-btn { background: #ff4d4d; border-color: #ff4d4d; }
+        
         input { padding: 8px; width: 60px; border: 1px solid #ccc; border-radius: 4px; margin-right: 8px; }
+        .chart-container { position: relative; height: 260px; width: 100%; margin-top: 16px; }
+        
+        .control-group { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .hidden { display: none !important; }
     </style>
 </head>
 <body>
 
     <div class="box">
-        <h2 style="margin-top:0;">System Controls</h2>
-        <label for="intervalInput">ESP32 Interval (1-5 mins): </label>
-        <input type="number" id="intervalInput" min="1" max="5" value="5">
-        <button onclick="updateInterval()">Send Command</button>
-        <button onclick="downloadCSV()" style="float: right; background: #0070f3;">Download 48h CSV</button>
+        <h2 style="margin-top:0;">System Control Center</h2>
+        <div>
+            <label for="intervalInput">ESP32 Interval (1-5 mins): </label>
+            <input type="number" id="intervalInput" min="1" max="5" value="5">
+            <button onclick="updateInterval()">Send Command</button>
+            <button onclick="downloadCSV()" style="background: #0070f3;">Download 48h CSV</button>
+        </div>
+        
+        <div class="control-group">
+            <span>Toggle Views:</span>
+            <button id="toggleTempBtn" class="btn-toggle active temp-btn" onclick="toggleChartVisibility('tempBox', 'toggleTempBtn', 'temp-btn')">Temperature Chart</button>
+            <button id="toggleHumBtn" class="btn-toggle active" onclick="toggleChartVisibility('humBox', 'toggleHumBtn', 'active')">Humidity Chart</button>
+        </div>
+    </div>
+
+    <div id="tempBox" class="box">
+        <h3 style="margin-top:0; color: #ff4d4d;">Temperature Trend (Rolling Window)</h3>
+        <div class="chart-container">
+            <canvas id="tempChartCanvas"></canvas>
+        </div>
+    </div>
+
+    <div id="humBox" class="box">
+        <h3 style="margin-top:0; color: #0070f3;">Humidity Trend (Rolling Window)</h3>
+        <div class="chart-container">
+            <canvas id="humChartCanvas"></canvas>
+        </div>
     </div>
 
     <div class="box">
-        <h2>Continuous 48-Hour Log</h2>
+        <h2>Continuous 48-Hour Historical Log</h2>
         <table id="dataTable">
             <thead>
                 <tr>
@@ -43,44 +80,113 @@
     const TOPIC_TELEMETRY = "esp32/dht22/telemetry";
     const TOPIC_INTERVAL  = "esp32/dht22/interval";
     
+    // --- ADJUSTABLE ROLLING WINDOW PARAMETER ---
+    // Change this value to change the graph scope (e.g., 12 for twelve hours, 0.5 for 30 minutes)
+    const CHART_WINDOW_HOURS = 6; 
+
     let globalLogs = [];
     let lastPostTime = 0;
     let lastGetTime = 0;
     const DEBOUNCE_DELAY = 2000; 
 
-    // --- FIXED: Explicitly declaring these variables globally ---
     let lastProcessedTemp = null;
     let lastProcessedHum = null;
+    
+    // Independent Chart References
+    let tempChartInstance = null;
+    let humChartInstance = null;
 
-    // Connect to MQTT Broker (Using Port 8884)
-    const client = new Paho.MQTT.Client("broker.hivemq.com", 8884, "web_pg_" + Math.random().toString(16).substr(2, 8));
+    // Initialize Time-Scaled Chart Configuration
+    function initCharts() {
+        const commonXScaleOptions = {
+            type: 'time', // Explicitly configures the True-Time geometric timeline axis
+            time: {
+                unit: 'minute',
+                tooltipFormat: 'PP p', // Detailed local format on hover
+                displayFormats: {
+                    minute: 'h:mm a',
+                    hour: 'h:mm a'
+                }
+            },
+            grid: { color: '#f0f0f0' },
+            title: { display: false }
+        };
+
+        // Temperature Chart Setup
+        const ctxTemp = document.getElementById('tempChartCanvas').getContext('2d');
+        tempChartInstance = new Chart(ctxTemp, {
+            type: 'line',
+            data: { datasets: [{
+                label: 'Temperature (°C)',
+                data: [],
+                borderColor: '#ff4d4d',
+                backgroundColor: 'rgba(255, 77, 77, 0.05)',
+                tension: 0.2,
+                pointRadius: 3,
+                fill: true
+            }] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: { x: commonXScaleOptions, y: { title: { display: true, text: 'Temp (°C)' }, suggestedMin: 15, suggestedMax: 40 } }
+            }
+        });
+
+        // Humidity Chart Setup
+        const ctxHum = document.getElementById('humChartCanvas').getContext('2d');
+        humChartInstance = new Chart(ctxHum, {
+            type: 'line',
+            data: { datasets: [{
+                label: 'Humidity (%)',
+                data: [],
+                borderColor: '#0070f3',
+                backgroundColor: 'rgba(0, 112, 243, 0.05)',
+                tension: 0.2,
+                pointRadius: 3,
+                fill: true
+            }] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: { x: commonXScaleOptions, y: { title: { display: true, text: 'Humidity (%)' }, suggestedMin: 20, suggestedMax: 100 } }
+            }
+        });
+    }
+
+    // Toggle Visibility Handler
+    function toggleChartVisibility(boxId, buttonId, activeClass) {
+        const box = document.getElementById(boxId);
+        const btn = document.getElementById(buttonId);
+        
+        box.classList.toggle('hidden');
+        btn.classList.toggle('active');
+        if (activeClass !== 'active') {
+            btn.classList.toggle(activeClass);
+        }
+    }
+
+    // Connect to MQTT Broker
+    const client = new Paho.MQTT.Client("broker.hivemq.com", Number(8884), "web_pg_" + Math.random().toString(16).substr(2, 8));
 
     client.onMessageArrived = async (message) => {
         try {
-            // --- FIXED: Parse the data FIRST before checking it ---
             const data = JSON.parse(message.payloadString);
             const now = Date.now();
             
-            // 1. IDENTITY CHECK
             if (data.temp === lastProcessedTemp && data.hum === lastProcessedHum && (now - lastPostTime < 60000)) {
                 console.log("MQTT Broker duplicate echo detected and destroyed.");
                 return;
             }
 
-            // 2. TIME CHECK
             if (now - lastPostTime < DEBOUNCE_DELAY) {
                 console.log("Frontend Time Gate: Blocked overlapping network frame.");
                 return;
             }
 
-            // Cache the values safely
             lastPostTime = now;
             lastProcessedTemp = data.temp;
             lastProcessedHum = data.hum;
 
-            console.log("MQTT: Processing valid payload, sending POST...", data);
-
-            // Forward raw MQTT payload to your Vercel serverless function
             const response = await fetch('/api/telemetry', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -88,19 +194,15 @@
             });
 
             if (response.ok) {
-                console.log("POST Success! Reloading UI...");
-                lastGetTime = 0; // Force bypass the GET debounce for an immediate visual refresh
+                lastGetTime = 0; 
                 loadDatabaseHistory();
-            } else {
-                console.error("Vercel rejected the POST request:", response.status);
             }
-
         } catch (err) {
-            console.error("Critical error parsing or routing MQTT data:", err);
+            console.error("Error routing raw MQTT frame:", err);
         }
     };
 
-    // Pull historical records directly from Neon via Vercel API
+    // Pull database entries from Postgres pipeline
     async function loadDatabaseHistory() {
         const now = Date.now();
 
@@ -114,6 +216,7 @@
             const response = await fetch('/api/telemetry');
             globalLogs = await response.json();
             
+            // Render Table Layout (Shows full continuous history)
             const tbody = document.querySelector("#dataTable tbody");
             tbody.innerHTML = globalLogs.map(log => `
                 <tr>
@@ -122,8 +225,38 @@
                     <td>${log.humidity}%</td>
                 </tr>
             `).join('');
+
+            // --- FLEXIBLE TIME-SCALED FILTER LOGIC ---
+            if (globalLogs.length > 0) {
+                const cutoffTime = now - (CHART_WINDOW_HOURS * 60 * 60 * 1000);
+
+                // 1. Filter out data older than the defined sliding window configuration
+                // 2. Reverse it to chronologically flow left-to-right
+                const rollingWindowData = globalLogs
+                    .filter(log => new Date(log.timestamp).getTime() >= cutoffTime)
+                    .reverse();
+
+                // Format data directly into Chart.js coordinate objects: { x: Timestamp, y: Value }
+                // This removes any dependencies on specific execution intervals
+                if (tempChartInstance) {
+                    tempChartInstance.data.datasets[0].data = rollingWindowData.map(log => ({
+                        x: new Date(log.timestamp),
+                        y: log.temperature
+                    }));
+                    tempChartInstance.update('none'); // Update without full layout animation frames for snappy UI
+                }
+
+                if (humChartInstance) {
+                    humChartInstance.data.datasets[0].data = rollingWindowData.map(log => ({
+                        x: new Date(log.timestamp),
+                        y: log.humidity
+                    }));
+                    humChartInstance.update('none');
+                }
+            }
+
         } catch (err) {
-            console.error("Error loading historical tables:", err);
+            console.error("Error processing database historical structures:", err);
         }
     }
 
@@ -151,24 +284,19 @@
         document.body.removeChild(link);
     }
 
-    // Initialize Connection with explicit SSL configuration
     client.connect({
-        useSSL: true,
         onSuccess: () => {
-            console.log("MQTT: Connected to secure broker network");
-            client.subscribe(TOPIC_TELEMETRY, {
-                onSuccess: () => console.log("MQTT: Successfully subscribed to telemetry stream."),
-                onFailure: (err) => console.error("MQTT: Subscription failed:", err)
-            });
+            console.log("MQTT: Secure Network Connection Established");
+            client.subscribe(TOPIC_TELEMETRY);
         },
-        onFailure: (err) => {
-            console.error("MQTT: Secure connection failed:", err);
-        },
-        timeout: 10
+        onFailure: (err) => console.error("MQTT: Connection Failed:", err),
+        useSSL: true
     });
 
-    // Automatically load database table entries when opening the site
-    window.onload = loadDatabaseHistory;
+    window.onload = () => {
+        initCharts();
+        loadDatabaseHistory();
+    };
 </script>
 </body>
 </html>
