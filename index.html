@@ -40,7 +40,7 @@
     </div>
 
 <script>
-    /*
+
     const TOPIC_TELEMETRY = "esp32/dht22/telemetry";
     const TOPIC_INTERVAL  = "esp32/dht22/interval";
     let globalLogs = [];
@@ -147,6 +147,7 @@
     }
 
 client.connect({
+    useSSL: true, 
     onSuccess: () => {
         console.log("MQTT: Connected to broker");
         
@@ -170,8 +171,8 @@ client.connect({
     // Automatically load database table entries when opening the site
     window.onload = loadDatabaseHistory;
 
-    */
-   
+
+   /*
    // 1. Check if the script runs at all
 console.log("DEBUG: Script started loading.");
 
@@ -203,6 +204,8 @@ client.connect({
 client.onMessageArrived = (message) => {
     console.log("DEBUG: MESSAGE RECEIVED!", message.payloadString);
 };
+*/
+
 </script>
 </body>
 </html>
