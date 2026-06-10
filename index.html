@@ -40,65 +40,70 @@
     </div>
 
 <script>
-
     const TOPIC_TELEMETRY = "esp32/dht22/telemetry";
     const TOPIC_INTERVAL  = "esp32/dht22/interval";
+    
     let globalLogs = [];
-
-    // --- FRONTEND DEBOUNCE TIME GATES (FIX B) ---
     let lastPostTime = 0;
     let lastGetTime = 0;
-    const DEBOUNCE_DELAY = 2000; // 2 seconds in milliseconds
+    const DEBOUNCE_DELAY = 2000; 
 
-    // Connect to MQTT Broker
-    const client = new Paho.MQTT.Client("broker.hivemq.com", Number(8884), "web_pg_" + Math.random().toString(16).substr(2, 8));
+    // --- FIXED: Explicitly declaring these variables globally ---
+    let lastProcessedTemp = null;
+    let lastProcessedHum = null;
+
+    // Connect to MQTT Broker (Using Port 8884)
+    const client = new Paho.MQTT.Client("broker.hivemq.com", 8884, "web_pg_" + Math.random().toString(16).substr(2, 8));
 
     client.onMessageArrived = async (message) => {
-    // 1. DEFINE DATA FIRST
-    const data = JSON.parse(message.payloadString);
-    const now = Date.now();
+        try {
+            // --- FIXED: Parse the data FIRST before checking it ---
+            const data = JSON.parse(message.payloadString);
+            const now = Date.now();
+            
+            // 1. IDENTITY CHECK
+            if (data.temp === lastProcessedTemp && data.hum === lastProcessedHum && (now - lastPostTime < 60000)) {
+                console.log("MQTT Broker duplicate echo detected and destroyed.");
+                return;
+            }
 
-    // 2. SAFETY CHECK: Ensure we actually have data
-    if (!data || typeof data.temp === 'undefined') {
-        console.error("Received malformed MQTT payload");
-        return;
-    }
+            // 2. TIME CHECK
+            if (now - lastPostTime < DEBOUNCE_DELAY) {
+                console.log("Frontend Time Gate: Blocked overlapping network frame.");
+                return;
+            }
 
-    // 3. IDENTITY CHECK (Now 'data' is safe to use)
-    if (data.temp === lastProcessedTemp && data.hum === lastProcessedHum && (now - lastPostTime < 60000)) {
-        console.log("MQTT Broker duplicate echo detected and destroyed.");
-        return;
-    }
+            // Cache the values safely
+            lastPostTime = now;
+            lastProcessedTemp = data.temp;
+            lastProcessedHum = data.hum;
 
-    // 4. TIME CHECK (Debounce)
-    if (now - lastPostTime < DEBOUNCE_DELAY) {
-        console.log("Frontend Time Gate: Blocked overlapping network frame.");
-        return;
-    }
+            console.log("MQTT: Processing valid payload, sending POST...", data);
 
-    // 5. CACHE VALUES
-    lastPostTime = now;
-    lastProcessedTemp = data.temp;
-    lastProcessedHum = data.hum;
+            // Forward raw MQTT payload to your Vercel serverless function
+            const response = await fetch('/api/telemetry', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ temp: data.temp, hum: data.hum })
+            });
 
-    // 6. FORWARD TO VERCEL
-    try {
-        await fetch('/api/telemetry', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ temp: data.temp, hum: data.hum })
-        });
-        
-        loadDatabaseHistory();
-    } catch (err) {
-        console.error("Error storing data point:", err);
-    }
-};
+            if (response.ok) {
+                console.log("POST Success! Reloading UI...");
+                lastGetTime = 0; // Force bypass the GET debounce for an immediate visual refresh
+                loadDatabaseHistory();
+            } else {
+                console.error("Vercel rejected the POST request:", response.status);
+            }
+
+        } catch (err) {
+            console.error("Critical error parsing or routing MQTT data:", err);
+        }
+    };
+
     // Pull historical records directly from Neon via Vercel API
     async function loadDatabaseHistory() {
         const now = Date.now();
 
-        // Block duplicate GET runs triggered by consecutive initialization events
         if (now - lastGetTime < DEBOUNCE_DELAY) {
             console.log("Frontend Debounce: Blocked redundant historical data GET query.");
             return;
@@ -146,66 +151,24 @@
         document.body.removeChild(link);
     }
 
-client.connect({
-    useSSL: true, 
-    onSuccess: () => {
-        console.log("MQTT: Connected to broker");
-        
-        // --- THIS IS THE CRITICAL PART ---
-        // Subscribe inside onSuccess so it triggers every time we connect/reconnect
-        client.subscribe(TOPIC_TELEMETRY, {
-            onSuccess: () => {
-                console.log("MQTT: Subscription active for topic:", TOPIC_TELEMETRY);
-            },
-            onFailure: (err) => {
-                console.error("MQTT: Subscription failed:", err);
-            }
-        });
-    },
-    onFailure: (err) => {
-        console.error("MQTT: Connection failed:", err);
-    },
-    useSSL: true
-});
+    // Initialize Connection with explicit SSL configuration
+    client.connect({
+        useSSL: true,
+        onSuccess: () => {
+            console.log("MQTT: Connected to secure broker network");
+            client.subscribe(TOPIC_TELEMETRY, {
+                onSuccess: () => console.log("MQTT: Successfully subscribed to telemetry stream."),
+                onFailure: (err) => console.error("MQTT: Subscription failed:", err)
+            });
+        },
+        onFailure: (err) => {
+            console.error("MQTT: Secure connection failed:", err);
+        },
+        timeout: 10
+    });
 
     // Automatically load database table entries when opening the site
     window.onload = loadDatabaseHistory;
-
-
-   /*
-   // 1. Check if the script runs at all
-console.log("DEBUG: Script started loading.");
-
-// 2. Check if Library is available
-if (typeof Paho === 'undefined') {
-    console.error("DEBUG: CRITICAL ERROR - Paho library not found!");
-} else {
-    console.log("DEBUG: Paho library detected.");
-}
-
-const TOPIC_TELEMETRY = "esp32/dht22/telemetry";
-const client = new Paho.MQTT.Client("broker.hivemq.com", 8000, "debug_client_" + Math.random().toString(16).substr(2, 8));
-
-// 3. Connection Handlers
-client.onConnectionLost = (obj) => console.log("DEBUG: Connection lost", obj.errorMessage);
-
-client.connect({
-    onSuccess: () => {
-        console.log("DEBUG: MQTT Connection Success!");
-        client.subscribe(TOPIC_TELEMETRY, {
-            onSuccess: () => console.log("DEBUG: Subscribed to topic: " + TOPIC_TELEMETRY),
-            onFailure: (err) => console.error("DEBUG: Subscribe failed!", err)
-        });
-    },
-    onFailure: (err) => console.error("DEBUG: Connection FAILED!", err),
-    useSSL: false // Using 8000/false to rule out SSL handshake issues
-});
-
-client.onMessageArrived = (message) => {
-    console.log("DEBUG: MESSAGE RECEIVED!", message.payloadString);
-};
-*/
-
 </script>
 </body>
 </html>
