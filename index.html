@@ -44,10 +44,24 @@
     const TOPIC_INTERVAL  = "esp32/dht22/interval";
     let globalLogs = [];
 
+    // --- FRONTEND DEBOUNCE TIME GATES (FIX B) ---
+    let lastPostTime = 0;
+    let lastGetTime = 0;
+    const DEBOUNCE_DELAY = 2000; // 2 seconds in milliseconds
+
     // Connect to MQTT Broker
     const client = new Paho.MQTT.Client("broker.hivemq.com", Number(8884), "web_pg_" + Math.random().toString(16).substr(2, 8));
 
     client.onMessageArrived = async (message) => {
+        const now = Date.now();
+        
+        // Block duplicate POST calls originating from twin background browser events
+        if (now - lastPostTime < DEBOUNCE_DELAY) {
+            console.log("Frontend Debounce: Blocked duplicate telemetry POST request.");
+            return;
+        }
+        lastPostTime = now;
+
         const data = JSON.parse(message.payloadString);
 
         // Forward raw MQTT payload to your Vercel serverless function
@@ -66,6 +80,15 @@
 
     // Pull historical records directly from Neon via Vercel API
     async function loadDatabaseHistory() {
+        const now = Date.now();
+
+        // Block duplicate GET runs triggered by consecutive initialization events
+        if (now - lastGetTime < DEBOUNCE_DELAY) {
+            console.log("Frontend Debounce: Blocked redundant historical data GET query.");
+            return;
+        }
+        lastGetTime = now;
+
         try {
             const response = await fetch('/api/telemetry');
             globalLogs = await response.json();
