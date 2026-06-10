@@ -40,6 +40,7 @@
     </div>
 
 <script>
+    /*
     const TOPIC_TELEMETRY = "esp32/dht22/telemetry";
     const TOPIC_INTERVAL  = "esp32/dht22/interval";
     let globalLogs = [];
@@ -168,6 +169,40 @@ client.connect({
 
     // Automatically load database table entries when opening the site
     window.onload = loadDatabaseHistory;
+
+    */
+   
+   // 1. Check if the script runs at all
+console.log("DEBUG: Script started loading.");
+
+// 2. Check if Library is available
+if (typeof Paho === 'undefined') {
+    console.error("DEBUG: CRITICAL ERROR - Paho library not found!");
+} else {
+    console.log("DEBUG: Paho library detected.");
+}
+
+const TOPIC_TELEMETRY = "esp32/dht22/telemetry";
+const client = new Paho.MQTT.Client("broker.hivemq.com", 8000, "debug_client_" + Math.random().toString(16).substr(2, 8));
+
+// 3. Connection Handlers
+client.onConnectionLost = (obj) => console.log("DEBUG: Connection lost", obj.errorMessage);
+
+client.connect({
+    onSuccess: () => {
+        console.log("DEBUG: MQTT Connection Success!");
+        client.subscribe(TOPIC_TELEMETRY, {
+            onSuccess: () => console.log("DEBUG: Subscribed to topic: " + TOPIC_TELEMETRY),
+            onFailure: (err) => console.error("DEBUG: Subscribe failed!", err)
+        });
+    },
+    onFailure: (err) => console.error("DEBUG: Connection FAILED!", err),
+    useSSL: false // Using 8000/false to rule out SSL handshake issues
+});
+
+client.onMessageArrived = (message) => {
+    console.log("DEBUG: MESSAGE RECEIVED!", message.payloadString);
+};
 </script>
 </body>
 </html>
