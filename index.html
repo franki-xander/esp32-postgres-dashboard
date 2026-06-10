@@ -53,40 +53,46 @@
     const client = new Paho.MQTT.Client("broker.hivemq.com", Number(8884), "web_pg_" + Math.random().toString(16).substr(2, 8));
 
     client.onMessageArrived = async (message) => {
-        const now = Date.now();
+    // 1. DEFINE DATA FIRST
+    const data = JSON.parse(message.payloadString);
+    const now = Date.now();
+
+    // 2. SAFETY CHECK: Ensure we actually have data
+    if (!data || typeof data.temp === 'undefined') {
+        console.error("Received malformed MQTT payload");
+        return;
+    }
+
+    // 3. IDENTITY CHECK (Now 'data' is safe to use)
+    if (data.temp === lastProcessedTemp && data.hum === lastProcessedHum && (now - lastPostTime < 60000)) {
+        console.log("MQTT Broker duplicate echo detected and destroyed.");
+        return;
+    }
+
+    // 4. TIME CHECK (Debounce)
+    if (now - lastPostTime < DEBOUNCE_DELAY) {
+        console.log("Frontend Time Gate: Blocked overlapping network frame.");
+        return;
+    }
+
+    // 5. CACHE VALUES
+    lastPostTime = now;
+    lastProcessedTemp = data.temp;
+    lastProcessedHum = data.hum;
+
+    // 6. FORWARD TO VERCEL
+    try {
+        await fetch('/api/telemetry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ temp: data.temp, hum: data.hum })
+        });
         
-        // 1. IDENTITY CHECK: If the broker echoed the exact same values within 1 minute, kill it
-        if (data.temp === lastProcessedTemp && data.hum === lastProcessedHum && (now - lastPostTime < 60000)) {
-            console.log("MQTT Broker duplicate echo detected and destroyed.");
-            return;
-        }
-
-        // 2. TIME CHECK: Standard millisecond fallback
-        if (now - lastPostTime < DEBOUNCE_DELAY) {
-            console.log("Frontend Time Gate: Blocked overlapping network frame.");
-            return;
-        }
-
-        // Cache the values instantly so they can't be reused on the next loop tick
-        lastPostTime = now;
-        lastProcessedTemp = data.temp;
-        lastProcessedHum = data.hum;
-        const data = JSON.parse(message.payloadString);
-
-        // Forward raw MQTT payload to your Vercel serverless function
-        try {
-            await fetch('/api/telemetry', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ temp: data.temp, hum: data.hum })
-            });
-            // Re-render the database table immediately so the update appears live
-            loadDatabaseHistory();
-        } catch (err) {
-            console.error("Error storing data point:", err);
-        }
-    };
-
+        loadDatabaseHistory();
+    } catch (err) {
+        console.error("Error storing data point:", err);
+    }
+};
     // Pull historical records directly from Neon via Vercel API
     async function loadDatabaseHistory() {
         const now = Date.now();
